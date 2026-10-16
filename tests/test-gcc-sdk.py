@@ -19,8 +19,8 @@ cases = [
     ('newer-gcc', 'macOS', 'gcc-15', '26.1', False, False, 0, None, '/configured', 0),
     ('older-macos', 'macOS', 'gcc-14', '15.7', False, True, 0, None, '/configured', 0),
     ('alias', 'macOS', 'gcc-third-latest', '26.1', False, True, 0, None, 'xcode-sdk', 0),
-    ('explicit', 'macOS', 'gcc-14', '26.1', False, False, 0, '/caller SDK', None, 0),
-    ('explicit-linux', 'Linux', 'gcc-14', '26.1', False, False, 0, '/caller SDK', None, 0),
+    ('explicit', 'macOS', 'gcc-14', '26.1', False, False, 0, '/caller SDK', '/caller SDK', 0),
+    ('explicit-linux', 'Linux', 'gcc-14', '26.1', False, False, 0, '/caller SDK', '/caller SDK', 0),
     ('empty-sdkroot', 'macOS', 'gcc-14', '26.1', False, True, 0, '', 'xcode-sdk', 0),
 ]
 rows = []
