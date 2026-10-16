@@ -37,7 +37,7 @@ runs:
       echo "CC=${COMPILER}" >> "$GITHUB_ENV"
       echo "CXX=$(echo ${COMPILER} | sed 's/gcc/g++/')" >> "$GITHUB_ENV"
       if [[ -n "${SDKROOT:-}" ]]; then
-        echo "Using SDKROOT=${SDKROOT}"
+        echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
       elif [[ "${RUNNER_OS}" == "macOS" && "${COMPILER}" == "gcc-14" && "$(sw_vers -productVersion)" == 26.* ]]; then
         SDKROOT_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk"
         if [[ ! -d "${SDKROOT_PATH}" ]]; then
