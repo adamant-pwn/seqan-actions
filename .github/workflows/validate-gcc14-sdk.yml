@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Oleksandr Kulkov
 # SPDX-License-Identifier: CC-BY-4.0
-name: Validate GCC 14 SDK selection
+name: Validate compact GCC SDK selection
 on:
   push:
-    branches: [codex/validate-sdk-override]
+    branches: [codex/validate-compact-sdk]
 permissions:
   contents: read
 jobs:
@@ -12,7 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: macos-latest, compiler: gcc-14}
+          - {os: macos-latest, compiler: gcc-14, explicit: false}
+          - {os: macos-latest, compiler: gcc-15, explicit: false}
+          - {os: macos-15, compiler: gcc-14, explicit: false}
+          - {os: macos-26-intel, compiler: gcc-14, explicit: false}
+          - {os: macos-latest, compiler: gcc-14, explicit: true}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -22,6 +26,7 @@ jobs:
           xcode-select -p > "$RUNNER_TEMP/developer-before"
           python3 tests/test-gcc-sdk.py
       - name: Choose an explicit SDK for this test
+        if: matrix.explicit
         id: sdk
         shell: bash
         run: |
@@ -39,7 +44,7 @@ jobs:
         run: |
           printf 'Selected SDK: %s\n' "$SDKROOT"
           test -d "$SDKROOT"
-          test "$SDKROOT" = "$EXPECTED_SDK"
+          if [[ -n "$EXPECTED_SDK" ]]; then test "$SDKROOT" = "$EXPECTED_SDK"; fi
           test "$(xcode-select -p)" = "$(cat "$RUNNER_TEMP/developer-before")"
           mkdir probe
           cat > probe/CMakeLists.txt <<'CMAKE'

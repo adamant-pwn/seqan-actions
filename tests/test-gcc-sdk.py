@@ -1,77 +1,99 @@
 # SPDX-FileCopyrightText: 2026 Oleksandr Kulkov
 # SPDX-License-Identifier: CC-BY-4.0
-
-from pathlib import Path
-import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
 
 source = Path('setup-compiler/action.yml').read_text()
-step = textwrap.dedent(source.split('    id: install_gcc\n', 1)[1].split('    run: |\n', 1)[1].split('\n  - name:', 1)[0])
+def step(name):
+    section = source.split('  - name: ' + name + '\n', 1)[1].split('\n  - name:', 1)[0]
+    return textwrap.dedent(section.split('    run: |\n', 1)[1])
+
 cases = [
-    ('sdk15', 'macOS', 'gcc-14', '26.1', True, True, 0, None, 'sdk15', 0),
-    ('xcode', 'macOS', 'gcc-14', '26.1', False, True, 0, None, 'xcode-sdk', 0),
-    ('missing', 'macOS', 'gcc-14', '26.1', False, False, 0, None, None, 1),
-    ('xcrun-error', 'macOS', 'gcc-14', '26.1', False, True, 42, None, None, 42),
-    ('linux', 'Linux', 'gcc-14', '26.1', False, False, 0, None, '/configured', 0),
-    ('newer-gcc', 'macOS', 'gcc-15', '26.1', False, False, 0, None, '/configured', 0),
-    ('older-macos', 'macOS', 'gcc-14', '15.7', False, True, 0, None, '/configured', 0),
-    ('alias', 'macOS', 'gcc-third-latest', '26.1', False, True, 0, None, 'xcode-sdk', 0),
-    ('explicit', 'macOS', 'gcc-14', '26.1', False, False, 0, '/caller SDK', '/caller SDK', 0),
-    ('explicit-linux', 'Linux', 'gcc-14', '26.1', False, False, 0, '/caller SDK', '/caller SDK', 0),
-    ('empty-sdkroot', 'macOS', 'gcc-14', '26.1', False, True, 0, '', 'xcode-sdk', 0),
+    ('active-first', 'active', True, None, False, False),
+    ('configured-fallback', 'configured', True, None, False, False),
+    ('clt-fallback', 'clt', True, None, False, False),
+    ('xcode-fallback', 'xcode', True, None, False, False),
+    ('no-compatible-sdk', None, True, None, False, False),
+    ('no-installed-sdk', None, False, None, False, False),
+    ('failed-xcrun', 'configured', True, None, True, False),
+    ('explicit-sdk', None, True, '/caller SDK', False, False),
+    ('empty-sdkroot', 'active', True, '', False, False),
+    ('compiler-error', None, True, None, False, True),
 ]
-rows = []
-for name, system, compiler, version, sdk15, xcode, xcrun_status, explicit, expected, status in cases:
-    with tempfile.TemporaryDirectory(prefix='sdk-selection-') as temp:
+for name, working, installed, explicit, xcrun_fail, compiler_fail in cases:
+    with tempfile.TemporaryDirectory(prefix='sdk-policy-') as temp:
         root = Path(temp)
         binpath = root / 'bin'
         binpath.mkdir()
-        if sdk15:
-            (root / 'SDK 15').mkdir()
-        if xcode:
-            (root / 'Developer Dir').mkdir()
+        sdks = dict(active=root/'active SDK', configured=root/'configured SDK',
+                    clt=root/'CLT SDKs'/'MacOSX42.sdk',
+                    xcode=root/'Applications'/'Renamed Xcode.app'/'Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX42.sdk')
+        if installed:
+            for sdk in sdks.values():
+                sdk.mkdir(parents=True)
+        output = root/'environment'
+        output.write_text('EXISTING=value\n')
+        calls = root/'calls'
         scripts = {
-            'sw_vers': 'echo sw_vers >> "$CALLS"; printf "%s\\n" "$MOCK_VERSION"',
-            'xcrun': '''echo xcrun >> "$CALLS"
- test -z "${SDKROOT+x}"
- test "$DEVELOPER_DIR" = "$MOCK_DEVELOPER"
- if [[ "$MOCK_STATUS" != 0 ]]; then exit "$MOCK_STATUS"; fi
- printf '%s\\n' "$MOCK_SDK"''',
-            'gcc-14': 'test "$1" = -v; printf "Configured with: --with-sysroot=/configured\\n" >&2',
-            'gcc-15': 'test "$1" = -v; printf "Configured with: --with-sysroot=/configured\\n" >&2',
+            'xcrun': 'if [[ "$XCRUN_FAIL" == 1 ]]; then exit 72; fi\nprintf "%s\\n" "$ACTIVE_SDK"',
+            'gcc-14': '[[ "$1" == -print-sysroot ]]; printf "%s\\n" "$CONFIGURED_SDK"',
+            'g++-14': '''[[ "$1" == -isysroot ]]
+ echo "$2" >> "$CALLS"
+ cat > "$PROBE_SOURCE"
+ if [[ "$COMPILER_FAIL" == 1 || "$2" != "$WORKING_SDK" ]]; then
+   echo "mock compiler/linker failure for $2" >&2
+   exit 1
+ fi''',
         }
         for command, body in scripts.items():
-            executable = binpath / command
-            executable.write_text('#!/bin/bash\nset -eu\n' + body + '\n')
-            executable.chmod(0o755)
-        script = step.replace('${{ inputs.compiler }}', compiler)
-        script = script.replace('/Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk', str(root / 'SDK 15'))
-        script = script.replace('DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer', 'DEVELOPER_DIR="' + str(root / 'Developer Dir') + '"')
-        script = script.replace('/Applications/Xcode_26.3.app/Contents/Developer', str(root / 'Developer Dir'))
-        script = 'install() { :; }\n' + script
-        env = dict(os.environ)
+            p=binpath/command
+            p.write_text('#!/bin/bash\nset -eu\n'+body+'\n')
+            p.chmod(0o755)
+        env=dict(os.environ)
         env.pop('SDKROOT', None)
-        env.update(PATH=f'{binpath}:{env["PATH"]}', RUNNER_OS=system,
-                   GITHUB_ENV=str(root / 'environment'), GITHUB_OUTPUT=str(root / 'outputs'),
-                   DEVELOPER_DIR='/caller/developer', MOCK_VERSION=version,
-                   MOCK_STATUS=str(xcrun_status), MOCK_SDK=str(root / 'xcode-sdk'),
-                   MOCK_DEVELOPER=str(root / 'Developer Dir'), CALLS=str(root / 'calls'))
+        env.update(PATH=f'{binpath}:{env["PATH"]}', RUNNER_TEMP=str(root), GITHUB_ENV=str(output),
+                   CC='gcc-14', CXX='g++-14', ACTIVE_SDK=str(sdks['active']), CONFIGURED_SDK=str(sdks['configured']),
+                   WORKING_SDK=str(sdks[working]) if working else '', CALLS=str(calls), PROBE_SOURCE=str(root/'source'),
+                   XCRUN_FAIL=str(int(xcrun_fail)), COMPILER_FAIL=str(int(compiler_fail)))
         if explicit is not None:
-            env['SDKROOT'] = explicit
-        result = subprocess.run(['bash', '-euo', 'pipefail'], input=script, env=env,
-                                text=True, capture_output=True, timeout=10)
-        assert result.returncode == status, (name, result.returncode, result.stderr)
-        exported = dict(line.split('=', 1) for line in (root / 'environment').read_text().splitlines())
-        expected_path = str(root / ('SDK 15' if expected == 'sdk15' else expected)) if expected and not expected.startswith('/') else expected
-        assert exported.get('SDKROOT') == expected_path, (name, exported, expected_path)
-        assert 'DEVELOPER_DIR' not in exported, name
-        if explicit or system != 'macOS' or compiler == 'gcc-15':
-            assert not (root / 'calls').exists(), name
-        if name == 'missing':
-            assert '::error::' in result.stdout, name
-        rows.append({'case': name, 'exit': result.returncode, 'sdk': expected})
-print(json.dumps(rows, indent=2))
-print(f'Passed {len(rows)}/{len(cases)} cases')
+            env['SDKROOT']=explicit
+        script=step('Select macOS SDK for GCC')
+        script=script.replace('/Library/Developer/CommandLineTools/SDKs/', '"'+str(root/'CLT SDKs')+'"/')
+        script=script.replace('/Applications/', '"'+str(root/'Applications')+'"/')
+        r=subprocess.run(['bash','-euo','pipefail'],input=script,env=env,text=True,capture_output=True,timeout=10)
+        success=bool(working or explicit)
+        assert (r.returncode==0)==success,(name,r.stdout,r.stderr)
+        expected='EXISTING=value\n'+(f'SDKROOT={sdks[working]}\n' if working else '')
+        assert output.read_text()==expected,(name,output.read_text(),expected)
+        assert not list(root.glob('gcc-sdk.*')),name
+        if explicit or not installed:
+            assert not calls.exists(),name
+        if name=='active-first':
+            assert calls.read_text().splitlines()==[str(sdks['active'])],name
+        if name=='xcode-fallback':
+            assert calls.read_text().splitlines()==list(map(str,sdks.values())),name
+        if not success:
+            assert '::error::' in r.stdout,name
+        if installed and not explicit:
+            assert '#include <mach/mach.h>' in (root/'source').read_text(),name
+        print('PASS',name)
+
+for system, explicit in [('macOS','/caller SDK'),('Linux','/caller SDK'),('Linux',None),('macOS',None)]:
+    with tempfile.TemporaryDirectory(prefix='sdk-export-') as temp:
+        root=Path(temp)
+        env=dict(os.environ,RUNNER_OS=system,GITHUB_ENV=str(root/'environment'),GITHUB_OUTPUT=str(root/'outputs'))
+        env.pop('SDKROOT',None)
+        if explicit:
+            env['SDKROOT']=explicit
+        script=step('Install GCC').replace('${{ inputs.compiler }}','gcc-third-latest')
+        script='install() { :; }\ngcc-14() { echo "Configured with: --with-sysroot=/configured" >&2; }\n'+script
+        r=subprocess.run(['bash','-euo','pipefail'],input=script,env=env,text=True,capture_output=True,timeout=10)
+        assert r.returncode==0,(system,explicit,r.stderr)
+        exported=dict(line.split('=',1) for line in (root/'environment').read_text().splitlines())
+        assert exported['CC']=='gcc-14' and exported['CXX']=='g++-14'
+        assert exported.get('SDKROOT')==(explicit or ('/configured' if system=='Linux' else None)),exported
+        print('PASS export',system,explicit)
+print('Passed 14/14 cases')
