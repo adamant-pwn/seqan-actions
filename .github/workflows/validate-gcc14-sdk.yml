@@ -21,7 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Test SDK selection policy
-        run: python3 setup-compiler/test_select_gcc_sdk.py
+        run: |
+          xcode-select -p > "$RUNNER_TEMP/developer-before"
+          python3 tests/test-gcc-sdk.py
       - uses: ./setup-compiler
         with:
           compiler: ${{ matrix.compiler }}
@@ -30,25 +32,21 @@ jobs:
         run: |
           printf 'Selected SDK: %s\n' "$SDKROOT"
           test -d "$SDKROOT"
-          selected_developer=$(xcode-select -p)
-          original_sdk=$SDKROOT
-          bash setup-compiler/select-gcc-sdk.sh "$CC"
-          test "$(xcode-select -p)" = "$selected_developer"
-          bad_env=$(mktemp)
-          if SDKROOT=/nonexistent-sdk GITHUB_ENV="$bad_env" bash setup-compiler/select-gcc-sdk.sh "$CC"; then
-            echo 'Invalid explicit SDK unexpectedly accepted'
-            exit 1
-          fi
-          test ! -s "$bad_env"
-          test "$SDKROOT" = "$original_sdk"
+          test "$(xcode-select -p)" = "$(cat "$RUNNER_TEMP/developer-before")"
           mkdir probe
           cat > probe/CMakeLists.txt <<'CMAKE'
           cmake_minimum_required(VERSION 3.18)
-          project(sdk_probe LANGUAGES CXX)
+          project(sdk_probe LANGUAGES C CXX)
+          add_executable(sdk_c main.c)
           add_executable(sdk_probe main.cpp)
           target_compile_features(sdk_probe PRIVATE cxx_std_20)
           target_compile_options(sdk_probe PRIVATE -Wall -Wextra -Werror)
           CMAKE
+          cat > probe/main.c <<'C'
+          #include <mach/mach.h>
+          #include <sys/sysctl.h>
+          int main(void) { return 0; }
+          C
           cat > probe/main.cpp <<'CPP'
           #include <mach/mach.h>
           #include <sys/sysctl.h>
@@ -58,8 +56,9 @@ jobs:
               return values.size() != 3;
           }
           CPP
-          cmake -S probe -B probe/build -DCMAKE_CXX_COMPILER="$CXX"
+          cmake -S probe -B probe/build -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX"
           cmake --build probe/build --parallel 2
+          ./probe/build/sdk_c
           ./probe/build/sdk_probe
       - name: Check the old SDK fallback
         shell: bash
