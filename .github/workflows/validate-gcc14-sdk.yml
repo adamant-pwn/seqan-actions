@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 Oleksandr Kulkov
+# SPDX-License-Identifier: CC-BY-4.0
+name: Validate GCC 14 SDK selection
+on:
+  push:
+    branches: [codex/validate-gcc14-sdk]
+permissions:
+  contents: read
+jobs:
+  native-probe:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./setup-compiler
+        with:
+          compiler: gcc-14
+      - name: Compile and run with selected SDK
+        shell: bash
+        run: |
+          printf 'Selected SDK: %s\n' "$SDKROOT"
+          test -d "$SDKROOT"
+          mkdir probe
+          cat > probe/CMakeLists.txt <<'CMAKE'
+          cmake_minimum_required(VERSION 3.18)
+          project(sdk_probe LANGUAGES CXX)
+          add_executable(sdk_probe main.cpp)
+          target_compile_features(sdk_probe PRIVATE cxx_std_20)
+          target_compile_options(sdk_probe PRIVATE -Wall -Wextra -Werror)
+          CMAKE
+          cat > probe/main.cpp <<'CPP'
+          #include <mach/mach.h>
+          #include <sys/sysctl.h>
+          #include <vector>
+          int main() {
+              std::vector<int> values{1, 2, 3};
+              return values.size() != 3;
+          }
+          CPP
+          cmake -S probe -B probe/build -DCMAKE_CXX_COMPILER="$CXX"
+          cmake --build probe/build --parallel 2
+          ./probe/build/sdk_probe
+      - name: Check the old SDK fallback
+        shell: bash
+        run: |
+          old_sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk
+          if [[ ! -d "$old_sdk" ]]; then
+            echo 'SDK 27 is absent; negative control unavailable.'
+            exit 0
+          fi
+          if SDKROOT="$old_sdk" cmake -S probe -B probe/old-sdk -DCMAKE_CXX_COMPILER="$CXX" > old-sdk.log 2>&1 &&
+             cmake --build probe/old-sdk --parallel 2 >> old-sdk.log 2>&1; then
+            echo 'SDK 27 also works on this runner; the previous failure did not reproduce.'
+          else
+            grep -E -A3 -B2 'error:|unknown architecture|xnu_static' old-sdk.log || cat old-sdk.log
+            echo 'The old SDK fallback fails on this runner.'
+          fi
