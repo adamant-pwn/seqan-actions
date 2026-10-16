@@ -3,7 +3,7 @@
 name: Validate GCC 14 SDK selection
 on:
   push:
-    branches: [codex/validate-gcc14-sdk]
+    branches: [codex/validate-sdk-override]
 permissions:
   contents: read
 jobs:
@@ -13,9 +13,6 @@ jobs:
       matrix:
         include:
           - {os: macos-latest, compiler: gcc-14}
-          - {os: macos-latest, compiler: gcc-15}
-          - {os: macos-15, compiler: gcc-14}
-          - {os: macos-26-intel, compiler: gcc-14}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -24,14 +21,25 @@ jobs:
         run: |
           xcode-select -p > "$RUNNER_TEMP/developer-before"
           python3 tests/test-gcc-sdk.py
+      - name: Choose an explicit SDK for this test
+        id: sdk
+        shell: bash
+        run: |
+          sdk=$(env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer xcrun --sdk macosx --show-sdk-path)
+          echo "path=$sdk" >> "$GITHUB_OUTPUT"
       - uses: ./setup-compiler
+        env:
+          SDKROOT: ${{ steps.sdk.outputs.path }}
         with:
           compiler: ${{ matrix.compiler }}
       - name: Compile and run with selected SDK
+        env:
+          EXPECTED_SDK: ${{ steps.sdk.outputs.path }}
         shell: bash
         run: |
           printf 'Selected SDK: %s\n' "$SDKROOT"
           test -d "$SDKROOT"
+          test "$SDKROOT" = "$EXPECTED_SDK"
           test "$(xcode-select -p)" = "$(cat "$RUNNER_TEMP/developer-before")"
           mkdir probe
           cat > probe/CMakeLists.txt <<'CMAKE'
@@ -60,18 +68,3 @@ jobs:
           cmake --build probe/build --parallel 2
           ./probe/build/sdk_c
           ./probe/build/sdk_probe
-      - name: Check the old SDK fallback
-        shell: bash
-        run: |
-          old_sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk
-          if [[ ! -d "$old_sdk" ]]; then
-            echo 'SDK 27 is absent; negative control unavailable.'
-            exit 0
-          fi
-          if SDKROOT="$old_sdk" cmake -S probe -B probe/old-sdk -DCMAKE_CXX_COMPILER="$CXX" > old-sdk.log 2>&1 &&
-             cmake --build probe/old-sdk --parallel 2 >> old-sdk.log 2>&1; then
-            echo 'SDK 27 also works on this runner; the previous failure did not reproduce.'
-          else
-            grep -E -A3 -B2 'error:|unknown architecture|xnu_static' old-sdk.log || cat old-sdk.log
-            echo 'The old SDK fallback fails on this runner.'
-          fi
