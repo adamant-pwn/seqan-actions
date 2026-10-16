@@ -8,18 +8,39 @@ permissions:
   contents: read
 jobs:
   native-probe:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-latest, compiler: gcc-14}
+          - {os: macos-latest, compiler: gcc-15}
+          - {os: macos-15, compiler: gcc-14}
+          - {os: macos-26-intel, compiler: gcc-14}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Test SDK selection policy
+        run: python3 setup-compiler/test_select_gcc_sdk.py
       - uses: ./setup-compiler
         with:
-          compiler: gcc-14
+          compiler: ${{ matrix.compiler }}
       - name: Compile and run with selected SDK
         shell: bash
         run: |
           printf 'Selected SDK: %s\n' "$SDKROOT"
           test -d "$SDKROOT"
+          selected_developer=$(xcode-select -p)
+          original_sdk=$SDKROOT
+          bash setup-compiler/select-gcc-sdk.sh "$CC"
+          test "$(xcode-select -p)" = "$selected_developer"
+          bad_env=$(mktemp)
+          if SDKROOT=/nonexistent-sdk GITHUB_ENV="$bad_env" bash setup-compiler/select-gcc-sdk.sh "$CC"; then
+            echo 'Invalid explicit SDK unexpectedly accepted'
+            exit 1
+          fi
+          test ! -s "$bad_env"
+          test "$SDKROOT" = "$original_sdk"
           mkdir probe
           cat > probe/CMakeLists.txt <<'CMAKE'
           cmake_minimum_required(VERSION 3.18)
