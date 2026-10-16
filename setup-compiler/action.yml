@@ -36,10 +36,9 @@ runs:
       install ${COMPILER}
       echo "CC=${COMPILER}" >> "$GITHUB_ENV"
       echo "CXX=$(echo ${COMPILER} | sed 's/gcc/g++/')" >> "$GITHUB_ENV"
-      if [[ -n "${SDKROOT:-}" ]]; then
+      if [[ "${RUNNER_OS}" != "macOS" ]]; then
+        SDKROOT=${SDKROOT:-$(${COMPILER} -v 2>&1 | sed -n 's@.*--with-sysroot=\([^ ]*\).*@\1@p')}
         echo "SDKROOT=${SDKROOT}" >> "$GITHUB_ENV"
-      elif [[ "${RUNNER_OS}" != "macOS" ]]; then
-        echo "SDKROOT=$(${COMPILER} -v 2>&1 | sed -n 's@.*--with-sysroot=\([^ ]*\).*@\1@p')" >> "$GITHUB_ENV"
       fi
       echo "gcc=${COMPILER}" >> $GITHUB_OUTPUT
 
@@ -48,42 +47,6 @@ runs:
     uses: seqan/actions/patch-m1-gcc@main
     with:
       compiler: ${{ steps.install_gcc.outputs.gcc }}
-
-  - name: Select macOS SDK for GCC
-    if: contains(inputs.compiler, 'gcc') && runner.os == 'macOS'
-    shell: bash
-    run: |
-      [[ -z "${SDKROOT:-}" ]] || exit 0
-      probe=$(mktemp -d "$RUNNER_TEMP/gcc-sdk.XXXXXX")
-      trap 'rm -rf "$probe"' EXIT
-      for sdk in "$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)" \
-                 "$("$CC" -print-sysroot)" \
-                 /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk \
-                 /Applications/*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk; do
-        [[ -d "$sdk" ]] || continue
-        # Check both Mach-header compatibility and linking against the SDK.
-        if "$CXX" -isysroot "$sdk" -x c++ -o "$probe/check" - > "$probe/log" 2>&1 <<'CPP'
-      #include <mach/mach.h>
-      #include <sys/sysctl.h>
-      #include <vector>
-      int main() { return 0; }
-      CPP
-        then
-          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
-          echo "Selected SDK: $sdk"
-          exit 0
-        fi
-      done
-      [[ ! -f "$probe/log" ]] || cat "$probe/log"
-      echo "::error::No installed macOS SDK passed the $CXX compile/link probe. Install a compatible SDK or choose another compiler; set SDKROOT to select an SDK explicitly."
-      exit 1
-
-  - name: Workaround Xcode SDK
-    if: contains(inputs.compiler, 'clang') && runner.os == 'macOS'
-    shell: bash
-    run: |
-      sudo xcode-select -s /Library/Developer/CommandLineTools/
-      echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
 
   - name: Install Clang
     if: contains(inputs.compiler, 'clang')
@@ -145,6 +108,39 @@ runs:
         LIBOMP_PREFIX=$(brew --prefix libomp)
         echo "OpenMP_ROOT=${LIBOMP_PREFIX}" >> "$GITHUB_ENV"
       fi
+
+  - name: Select macOS SDK
+    if: runner.os == 'macOS' && (contains(inputs.compiler, 'gcc') || contains(inputs.compiler, 'clang'))
+    shell: bash
+    run: |
+      if [[ -n "${SDKROOT:-}" ]]; then
+        echo "SDKROOT=$SDKROOT" >> "$GITHUB_ENV"
+        exit 0
+      fi
+      probe=$(mktemp -d "$RUNNER_TEMP/compiler-sdk.XXXXXX")
+      trap 'rm -rf "$probe"' EXIT
+      read -r -a flags <<< "-x c++ ${LDFLAGS:-}"
+      for sdk in "$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)" \
+                 "$("$CC" -print-sysroot 2>/dev/null || true)" \
+                 /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk \
+                 /Applications/*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk; do
+        [[ -d "$sdk" ]] || continue
+        # Check both Mach-header compatibility and linking against the SDK.
+        if "$CXX" -isysroot "$sdk" "${flags[@]}" -o "$probe/check" - > "$probe/log" 2>&1 <<'CPP'
+      #include <mach/mach.h>
+      #include <sys/sysctl.h>
+      #include <vector>
+      int main() { return 0; }
+      CPP
+        then
+          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
+          echo "Selected SDK: $sdk"
+          exit 0
+        fi
+      done
+      [[ ! -f "$probe/log" ]] || cat "$probe/log"
+      echo "::error::No installed macOS SDK passed the $CXX compile/link probe. Install a compatible SDK or choose another compiler; set SDKROOT to select an SDK explicitly."
+      exit 1
 
   - name: Install Intel
     if: contains(inputs.compiler, 'intel')
