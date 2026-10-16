@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Oleksandr Kulkov
 # SPDX-License-Identifier: CC-BY-4.0
-name: Validate compact GCC SDK selection
+name: Validate shared macOS SDK selection
 on:
   push:
-    branches: [codex/validate-compact-sdk]
+    branches: [codex/validate-shared-sdk]
 permissions:
   contents: read
 jobs:
@@ -13,10 +13,9 @@ jobs:
       matrix:
         include:
           - {os: macos-latest, compiler: gcc-14, explicit: false}
-          - {os: macos-latest, compiler: gcc-15, explicit: false}
-          - {os: macos-15, compiler: gcc-14, explicit: false}
-          - {os: macos-26-intel, compiler: gcc-14, explicit: false}
-          - {os: macos-latest, compiler: gcc-14, explicit: true}
+          - {os: macos-latest, compiler: clang-20, explicit: false}
+          - {os: macos-15, compiler: clang-18, explicit: false}
+          - {os: macos-latest, compiler: clang-20, explicit: true}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -30,7 +29,7 @@ jobs:
         id: sdk
         shell: bash
         run: |
-          sdk=$(env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer xcrun --sdk macosx --show-sdk-path)
+          sdk=$(env -u SDKROOT xcrun --sdk macosx --show-sdk-path)
           echo "path=$sdk" >> "$GITHUB_OUTPUT"
       - uses: ./setup-compiler
         env:
@@ -64,7 +63,12 @@ jobs:
           #include <mach/mach.h>
           #include <sys/sysctl.h>
           #include <vector>
+          #include <stdexcept>
+          struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
+          struct Result { Result() { throw Error("expected"); } };
+          Result make_result() { return Result(); }
           int main() {
+              try { make_result(); return 1; } catch (const Error &) {}
               std::vector<int> values{1, 2, 3};
               return values.size() != 3;
           }

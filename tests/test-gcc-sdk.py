@@ -22,6 +22,9 @@ cases = [
     ('explicit-sdk', None, True, '/caller SDK', False, False),
     ('empty-sdkroot', 'active', True, '', False, False),
     ('compiler-error', None, True, None, False, True),
+    ('clang', 'active', True, None, False, False),
+    ('clang-fallback', 'xcode', True, None, False, False),
+    ('linker-flags', 'active', True, None, False, False),
 ]
 for name, working, installed, explicit, xcrun_fail, compiler_fail in cases:
     with tempfile.TemporaryDirectory(prefix='sdk-policy-') as temp:
@@ -40,7 +43,11 @@ for name, working, installed, explicit, xcrun_fail, compiler_fail in cases:
         scripts = {
             'xcrun': 'if [[ "$XCRUN_FAIL" == 1 ]]; then exit 72; fi\nprintf "%s\\n" "$ACTIVE_SDK"',
             'gcc-14': '[[ "$1" == -print-sysroot ]]; printf "%s\\n" "$CONFIGURED_SDK"',
+            'clang-20': 'echo unsupported >&2; exit 1',
             'g++-14': '''[[ "$1" == -isysroot ]]
+ if [[ "$EXPECT_FLAGS" == 1 ]]; then
+   [[ "$3" == -x && "$4" == c++ && "$5" == -L/test/lib && "$6" == -Wl,-rpath,/test/lib && "$7" == -lunwind ]]
+ fi
  echo "$2" >> "$CALLS"
  cat > "$PROBE_SOURCE"
  if [[ "$COMPILER_FAIL" == 1 || "$2" != "$WORKING_SDK" ]]; then
@@ -48,6 +55,7 @@ for name, working, installed, explicit, xcrun_fail, compiler_fail in cases:
    exit 1
  fi''',
         }
+        scripts['clang++-20'] = scripts['g++-14']
         for command, body in scripts.items():
             p=binpath/command
             p.write_text('#!/bin/bash\nset -eu\n'+body+'\n')
@@ -55,20 +63,21 @@ for name, working, installed, explicit, xcrun_fail, compiler_fail in cases:
         env=dict(os.environ)
         env.pop('SDKROOT', None)
         env.update(PATH=f'{binpath}:{env["PATH"]}', RUNNER_TEMP=str(root), GITHUB_ENV=str(output),
-                   CC='gcc-14', CXX='g++-14', ACTIVE_SDK=str(sdks['active']), CONFIGURED_SDK=str(sdks['configured']),
+                   CC='clang-20' if name.startswith('clang') else 'gcc-14', CXX='clang++-20' if name.startswith('clang') else 'g++-14', EXPECT_FLAGS='1' if name=='linker-flags' else '0', ACTIVE_SDK=str(sdks['active']), CONFIGURED_SDK=str(sdks['configured']),
                    WORKING_SDK=str(sdks[working]) if working else '', CALLS=str(calls), PROBE_SOURCE=str(root/'source'),
                    XCRUN_FAIL=str(int(xcrun_fail)), COMPILER_FAIL=str(int(compiler_fail)))
+        env['LDFLAGS']='-L/test/lib -Wl,-rpath,/test/lib -lunwind' if name=='linker-flags' else ''
         if explicit is not None:
             env['SDKROOT']=explicit
-        script=step('Select macOS SDK for GCC')
+        script=step('Select macOS SDK')
         script=script.replace('/Library/Developer/CommandLineTools/SDKs/', '"'+str(root/'CLT SDKs')+'"/')
         script=script.replace('/Applications/', '"'+str(root/'Applications')+'"/')
         r=subprocess.run(['bash','-euo','pipefail'],input=script,env=env,text=True,capture_output=True,timeout=10)
         success=bool(working or explicit)
         assert (r.returncode==0)==success,(name,r.stdout,r.stderr)
-        expected='EXISTING=value\n'+(f'SDKROOT={sdks[working]}\n' if working else '')
+        expected='EXISTING=value\n'+(f'SDKROOT={sdks[working]}\n' if working else (f'SDKROOT={explicit}\n' if explicit else ''))
         assert output.read_text()==expected,(name,output.read_text(),expected)
-        assert not list(root.glob('gcc-sdk.*')),name
+        assert not list(root.glob('compiler-sdk.*')),name
         if explicit or not installed:
             assert not calls.exists(),name
         if name=='active-first':
@@ -94,6 +103,6 @@ for system, explicit in [('macOS','/caller SDK'),('Linux','/caller SDK'),('Linux
         assert r.returncode==0,(system,explicit,r.stderr)
         exported=dict(line.split('=',1) for line in (root/'environment').read_text().splitlines())
         assert exported['CC']=='gcc-14' and exported['CXX']=='g++-14'
-        assert exported.get('SDKROOT')==(explicit or ('/configured' if system=='Linux' else None)),exported
+        assert exported.get('SDKROOT')==((explicit or '/configured') if system=='Linux' else None),exported
         print('PASS export',system,explicit)
-print('Passed 14/14 cases')
+print('Passed 17/17 cases')
