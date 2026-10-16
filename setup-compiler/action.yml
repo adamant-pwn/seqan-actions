@@ -36,7 +36,21 @@ runs:
       install ${COMPILER}
       echo "CC=${COMPILER}" >> "$GITHUB_ENV"
       echo "CXX=$(echo ${COMPILER} | sed 's/gcc/g++/')" >> "$GITHUB_ENV"
-      if [[ "${RUNNER_OS}" != "macOS" ]]; then
+      if [[ -n "${SDKROOT:-}" ]]; then
+        echo "Using SDKROOT=${SDKROOT}"
+      elif [[ "${RUNNER_OS}" == "macOS" && "${COMPILER}" == "gcc-14" && "$(sw_vers -productVersion)" == 26.* ]]; then
+        SDKROOT_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk"
+        if [[ ! -d "${SDKROOT_PATH}" ]]; then
+          if [[ ! -d "/Applications/Xcode_26.3.app/Contents/Developer" ]]; then
+            echo "::error::GCC 14 on macOS 26 needs SDK 15 or Xcode 26.3. Install one, or set SDKROOT to a compatible SDK."
+            exit 1
+          fi
+          # Newer SDKs contain Mach headers that GCC 14 cannot compile.
+          SDKROOT_PATH=$(env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer \
+            xcrun --sdk macosx --show-sdk-path)
+        fi
+        echo "SDKROOT=${SDKROOT_PATH}" >> "$GITHUB_ENV"
+      else
         echo "SDKROOT=$(${COMPILER} -v 2>&1 | sed -n 's@.*--with-sysroot=\([^ ]*\).*@\1@p')" >> "$GITHUB_ENV"
       fi
       echo "gcc=${COMPILER}" >> $GITHUB_OUTPUT
@@ -46,13 +60,6 @@ runs:
     uses: seqan/actions/patch-m1-gcc@main
     with:
       compiler: ${{ steps.install_gcc.outputs.gcc }}
-
-  - name: Select a compatible macOS SDK for GCC
-    if: contains(inputs.compiler, 'gcc') && runner.os == 'macOS'
-    shell: bash
-    env:
-      GCC: ${{ steps.install_gcc.outputs.gcc }}
-    run: bash "$GITHUB_ACTION_PATH/select-gcc-sdk.sh" "$GCC"
 
   - name: Workaround Xcode SDK
     if: contains(inputs.compiler, 'clang') && runner.os == 'macOS'
